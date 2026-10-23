@@ -1,0 +1,10 @@
+{
+  "cnn_test_accuracy": 0.9927,
+  "cnn_test_f1": 0.9932,
+  "tfidf_logreg_raw_accuracy": 0.9901,
+  "tfidf_logreg_clean_accuracy": 0.9831,
+  "real_articles_mentioning_reuters": 0.9983,
+  "train_size": 28239,
+  "val_size": 4984,
+  "test_size": 5864
+}

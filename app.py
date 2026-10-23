@@ -1,65 +1,72 @@
+"""Streamlit app: paste a news article, get a Real / Fake prediction from the CNN.
+
+Run:  streamlit run app.py
+"""
+import json
+from pathlib import Path
+
+import numpy as np
 import streamlit as st
-import nltk
-import joblib
-from sklearn.feature_extraction.text import TfidfVectorizer
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-from sklearn.neural_network import MLPClassifier  # Assuming you're using MLPClassifier, adjust if you're using a Keras model
+from tensorflow import keras
 
-# Download required NLTK resources
-nltk.download('stopwords')
-nltk.download('punkt')
-nltk.download('wordnet')
+from preprocess import strip_source_leakage
 
-# Initialize the lemmatizer and stopwords
-lemmatizer = WordNetLemmatizer()
-stop_words = set(stopwords.words('english'))
+MODEL_DIR = Path(__file__).parent / "model"
 
-# Define the preprocessing function
-def preprocess_text(text):
-    # Tokenize the text into words
-    tokens = text.split()
+EXAMPLES = {
+    "Wire-service style": (
+        "Poland's new prime minister faces a difficult balancing act as he seeks to repair "
+        "relations with the European Union while keeping the support of the ruling party's "
+        "conservative base, officials said on Tuesday."
+    ),
+    "Sensational style": (
+        "Donald Trump Sends Out Embarrassing New Year's Eve Message; This is Disturbing. "
+        "You won't believe what he tweeted this time. Sharing is caring, so make sure "
+        "everyone sees just how unhinged this man has become!"
+    ),
+}
 
-    # Remove stopwords, lemmatize, and keep only alphabetic words
-    cleaned_tokens = [
-        lemmatizer.lemmatize(token.lower())  # Lemmatize and convert to lowercase
-        for token in tokens if token.lower() not in stop_words and token.isalpha()
-    ]
 
-    # Return the preprocessed tokens as a single string
-    return ' '.join(cleaned_tokens)
+@st.cache_resource
+def load_model():
+    return keras.models.load_model(MODEL_DIR / "fake_news_cnn.keras")
 
-# Load the pre-trained TF-IDF vectorizer and MLP model
-tfidf_vectorizer = joblib.load('tfidf_vectorizer.pkl')
-mlp_model = joblib.load('mlp_model.pkl')  # Assuming you have the trained MLP model saved
 
-# Streamlit UI Setup
-st.title('Fake News Detection with MLP Model')
+@st.cache_data
+def load_metrics():
+    path = MODEL_DIR / "metrics.json"
+    return json.loads(path.read_text()) if path.exists() else {}
 
-st.write("""
-    This app classifies news articles as **Real** or **Fake** based on the input text using an MLP model.
-    You can enter a sentence below to get a prediction.
-""")
 
-# User input: Enter text to classify
-user_input = st.text_area("Enter the news article text here:")
+st.set_page_config(page_title="Fake News Detector", page_icon="📰")
+st.title("📰 Fake News Detector")
+st.write(
+    "A 1D-CNN trained on ~40k political news articles (ISOT dataset) classifies an article "
+    "as **Real** or **Fake** from its writing style and content."
+)
 
-# Preprocess and predict when user clicks the button
-if st.button("Predict"):
-    if user_input:
-        # Clean and preprocess the input text
-        cleaned_text = preprocess_text(user_input)
+metrics = load_metrics()
+if metrics:
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Test accuracy", f"{metrics['cnn_test_accuracy']:.1%}")
+    c2.metric("Test F1", f"{metrics['cnn_test_f1']:.3f}")
+    c3.metric("Test articles", f"{metrics['test_size']:,}")
 
-        # Transform the input text using the trained TF-IDF vectorizer
-        input_tfidf = tfidf_vectorizer.transform([cleaned_text])
+example = st.selectbox("Try an example, or paste your own below", ["(none)", *EXAMPLES])
+text = st.text_area("News article (title and/or body)",
+                    value=EXAMPLES.get(example, ""), height=220)
 
-        # Make predictions using the MLP model
-        mlp_prediction = mlp_model.predict(input_tfidf)
-
-        # Convert MLP predictions to True/False (or 'Real'/'Fake')
-        prediction_label = "Real" if mlp_prediction[0] == 1 else "Fake"
-
-        # Display the prediction
-        st.write(f"**Prediction**: {prediction_label}")
+if st.button("Predict", type="primary"):
+    cleaned = strip_source_leakage(text)
+    if len(cleaned.split()) < 5:
+        st.error("Please enter at least a sentence or two of the article.")
     else:
-        st.error("Please enter some text to classify.")
+        prob_real = float(load_model().predict(np.array([cleaned], dtype=object), verbose=0)[0][0])
+        label, conf = ("Real", prob_real) if prob_real >= 0.5 else ("Fake", 1 - prob_real)
+        (st.success if label == "Real" else st.error)(f"**{label}** ({conf:.1%} confidence)")
+        st.progress(prob_real, text=f"Probability real: {prob_real:.1%}")
+
+st.caption(
+    "Trained on 2016–2017 US political news, so it works best on similar articles. It judges "
+    "style and content, not facts, so it is not a fact-checker."
+)
